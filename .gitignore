@@ -7,7 +7,7 @@ obj/
 x64/
 SugiotKeylogger/x64
 Debug/
-
+.vs/
 # Ignore a specific file (path to file)
 
 # Ignore all files in a specific folder (folder/*)
