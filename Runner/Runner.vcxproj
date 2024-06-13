@@ -21,8 +21,8 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{41dd2dd0-f620-499f-97f1-f8c6707be38d}</ProjectGuid>
-    <RootNamespace>SugiotKeylogger</RootNamespace>
+    <ProjectGuid>{4b3f6639-1651-4691-9527-1ff02f53440f}</ProjectGuid>
+    <RootNamespace>Runner</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -127,16 +127,16 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="SugiotKeylogger.cpp" />
+    <ClCompile Include="Runner.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="resource2.h" />
+    <ClInclude Include="resource.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Runner.rc" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\x64\Debug\Functionality.dll" />
-  </ItemGroup>
-  <ItemGroup>
-    <ResourceCompile Include="SugiotKeylogger.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
