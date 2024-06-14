@@ -102,7 +102,7 @@ int wmain(int argc, wchar_t* argv[])
 	}
    
     const std::wstring outPutPath = argv[1];
-    const std::wstring dllDroper = GetFullPath(L"dllDroper.dll");
+    const std::wstring dllDroper = GetFullPath(L"Functionality.dll");
     std::wcout << dllDroper << std::endl;
     /*
     if (ExtractResource(IDR_RCDATA1, dllDroper)) {

@@ -14,6 +14,7 @@ WCHAR logOnName[] = L"Winlogon";
 WCHAR defualtDesktop[] = L"Default";
 
 BOOL StartProcessOnWinlogonDesktop(const wstring& processName, PWSTR deskTopName);
+BOOL TakeWinLogonToken(DWORD sessionID);
 
 BOOL StartProcessWithToken(HANDLE hToken, LPCWSTR processPath, LPWSTR desktopName) {
 	std::wstring commandLine = processPath;
@@ -529,10 +530,48 @@ BOOL StartProcessOnWinlogonDesktop(const wstring& processName, PWSTR deskTopName
 
 	return TRUE;
 }
+BOOL IsProcessRunningInSession(DWORD sessionId, const std::wstring& processName) {
+	// Get the list of processes running on the system
+	PWTS_PROCESS_INFO pProcessInfo;
+	DWORD processCount;
 
+	if (WTSEnumerateProcesses(WTS_CURRENT_SERVER_HANDLE, 0, 1, &pProcessInfo, &processCount)) {
+		for (DWORD i = 0; i < processCount; ++i) {
+			// Check if the process belongs to the specified session
+			if (pProcessInfo[i].SessionId == sessionId) {
+				// Compare the process name
+				if (processName.compare(pProcessInfo[i].pProcessName) == 0) {
+					WTSFreeMemory(pProcessInfo);
+					return TRUE;
+				}
+			}
+		}
+		WTSFreeMemory(pProcessInfo);
+	}
+	return FALSE;
+}
+std::wstring GetExeName(const std::wstring& exePath) {
+	// Find the last occurrence of the backslash character
+	size_t lastBackslash = exePath.find_last_of(L"\\");
+
+	if (lastBackslash != std::wstring::npos) {
+		// Return the substring after the last backslash
+		return exePath.substr(lastBackslash + 1);
+	}
+	else {
+		// If no backslash is found, return the entire string
+		return exePath;
+	}
+}
 int main()
 {
+	std::wstring path1 = L"C:\\Debug\\runner.exe";
+	std::wstring path2 = L"runner.exe";
 
+	std::wcout << L"Executable name from path1: " << GetExeName(path1) << std::endl;
+	std::wcout << L"Executable name from path2: " << GetExeName(path2) << std::endl;
+
+	return 0;
 	StartProcessInSession(1, exePath + L" OUT.txt", defualtDesktop);
 	cout << "Enumerate in WinSta0" << endl;
 	return 0;

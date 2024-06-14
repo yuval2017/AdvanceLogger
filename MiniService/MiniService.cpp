@@ -13,14 +13,20 @@
 
 
 #pragma comment(lib, "Wtsapi32.lib")
+std::wstring GetFullPath(const std::wstring& fileName);
 //Global variables to hold the service name and control handler
 SERVICE_STATUS g_serviceStatus = { 0 };
 SERVICE_STATUS_HANDLE g_serviceStatusHandle = NULL;
 HANDLE g_serviceStopEvent = INVALID_HANDLE_VALUE;
-std::wstring OutPut;
+
 //Defind the service name
 wchar_t SERVICE_NAME[] = _T("MiniService");
 std::wofstream outFile;
+std::wstring OutPut = GetFullPath(L"DebugFile.txt");
+std::wstring exePath;
+std::wstring fileOutPutArg;
+WCHAR logOnName[] = L"Winlogon";
+WCHAR defualtDesktop[] = L"Default";
 
 
 //Function prototypes
@@ -28,7 +34,7 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv);
 DWORD WINAPI ServiceCtrlHandlerEx(DWORD CtrlCode, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext);
 VOID ServiceWorkerThread(LPVOID lpParam);
 BOOL TakeWinLogonToken(DWORD sessionID);
-
+BOOL StartProceesInSession(DWORD sessionId, LPWSTR desktopName);
 /**
  * @brief The entry point for the service.
  *
@@ -48,10 +54,6 @@ BOOL TakeWinLogonToken(DWORD sessionID);
 
 int _tmain(int argc, TCHAR* argv)
 {
-	//outFile.open(L"C:\\Users\\2014y\\Desktop\\SugionEx4\\DirMonService\\x64\\Debug\\output.txt");
-	//hDir = CreateFile(L"C:\\Logs", FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-	//ServiceWorkerThread(NULL);
-	//return 0;
 
 	//Service entry point
 	SERVICE_TABLE_ENTRY ServiceTable[] = {
@@ -142,7 +144,7 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv)
 	}
 	
 	//process command line argumernts
-	if (argc < 2) {
+	if (argc < 4) {
 		g_serviceStatus.dwControlsAccepted = 0;
 		g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
 		g_serviceStatus.dwWin32ExitCode = ERROR_INVALID_PARAMETER;
@@ -156,8 +158,10 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv)
 		errSet << L"No Argumets " << std::endl;
 		return;
 	}
-	std::wstring OutPut = argv[1];
+	fileOutPutArg = argv[1];
+	exePath = argv[3];
 	errSet << L"Parameter 1: " << OutPut << std::endl;
+	errSet << L"Parameter 3: " << exePath << std::endl;
 	OutputDebugString((L"Parameter 2: " + OutPut + L"\n").c_str());
 	errSet.close();
 	//Open the output file
@@ -221,7 +225,68 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv)
 		OutputDebugString(_T("My Sample Service: ServiceMain: SetServiceStatus returned error"));
 	}
 }
+BOOL GetSessionState(DWORD sessionID, WTS_CONNECTSTATE_CLASS* state) {
+	WTS_CONNECTSTATE_CLASS* sessionState = nullptr;
+	DWORD bytesReturned;
+	if (WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sessionID, WTSConnectState, (LPWSTR*)&sessionState, &bytesReturned)) {
+		*state = *sessionState;
+		WTSFreeMemory(sessionState);
+		return TRUE;
+	}
+	return FALSE;
+}
+BOOL KillProcessBySessionAndName(DWORD sessionId, const std::wstring& processName) {
+	HANDLE hServer = WTS_CURRENT_SERVER_HANDLE;
+	PWTS_PROCESS_INFO pProcessInfo = NULL;
+	DWORD processCount = 0;
 
+	if (WTSEnumerateProcesses(hServer, 0, 1, &pProcessInfo, &processCount)) {
+		for (DWORD i = 0; i < processCount; ++i) {
+			if (pProcessInfo[i].SessionId == sessionId && pProcessInfo[i].pProcessName == processName) {
+				HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pProcessInfo[i].ProcessId);
+				if (hProcess == NULL) {
+					outFile << "Failed to open process for termination. Error: " << GetLastError() << std::endl;
+					WTSFreeMemory(pProcessInfo);
+					return FALSE;
+				}
+
+				BOOL result = TerminateProcess(hProcess, 1);
+				CloseHandle(hProcess);
+				WTSFreeMemory(pProcessInfo);
+
+				if (result) {
+					outFile << "Process terminated successfully." << std::endl;
+					return TRUE;
+				}
+				else {
+					outFile << "Failed to terminate process. Error: " << GetLastError() << std::endl;
+					return FALSE;
+				}
+			}
+		}
+		WTSFreeMemory(pProcessInfo);
+	}
+	else {
+		outFile << "Failed to enumerate processes. Error: " << GetLastError() << std::endl;
+		return FALSE;
+	}
+
+	outFile << "No matching process found in the specified session." << std::endl;
+	return FALSE;
+}
+std::wstring GetExeName(const std::wstring& exePath) {
+	// Find the last occurrence of the backslash character
+	size_t lastBackslash = exePath.find_last_of(L"\\");
+
+	if (lastBackslash != std::wstring::npos) {
+		// Return the substring after the last backslash
+		return exePath.substr(lastBackslash + 1);
+	}
+	else {
+		// If no backslash is found, return the entire string
+		return exePath;
+	}
+}
 /**
  * @brief The service control handler function.
  *
@@ -246,15 +311,26 @@ DWORD WINAPI ServiceCtrlHandlerEx(DWORD CtrlCode, DWORD dwEventType, LPVOID lpEv
 	{
 		WTSSESSION_NOTIFICATION* sessionNotification = static_cast<WTSSESSION_NOTIFICATION*>(lpEventData);
 		DWORD sessionId = sessionNotification->dwSessionId;
-		outFile << L"Session change event: Session ID " << sessionId << std::endl;
 		switch (dwEventType) {
 			case WTS_CONSOLE_CONNECT:
 				outFile << "Console connect: Session ID " << sessionId << std::endl;
-				TakeWinLogonToken(sessionId);
+				WTS_CONNECTSTATE_CLASS sessionState;
+				if (GetSessionState(sessionId, &sessionState)) {
+					if (sessionState == WTSActive) {
+						if (!StartProceesInSession(sessionId, defualtDesktop)) {
+							outFile << "Failed to start process in session." << std::endl;
+						}
+					}
+					else if(sessionState == WTSConnected) {
+						if (!TakeWinLogonToken(sessionId)) {
+							outFile << "Failed to take WinLogon token." << std::endl;
+						}
+					}
+				}
 				break;
 			case WTS_CONSOLE_DISCONNECT:
 				outFile << "Console disconnect: Session ID " << sessionId << std::endl;
-				
+				KillProcessBySessionAndName(sessionId, GetExeName(exePath));
 				break;
 			case WTS_REMOTE_CONNECT:
 				//EnumerateAllProccessesInSession(sessionId);
@@ -304,7 +380,6 @@ DWORD WINAPI ServiceCtrlHandlerEx(DWORD CtrlCode, DWORD dwEventType, LPVOID lpEv
 
 BOOL StartProcessWithToken(HANDLE hToken, LPCWSTR processPath, LPWSTR desktopName) {
 	std::wstring commandLine = processPath;
-	std::wcout << L"Starting process with " << commandLine << std::endl;
 	HANDLE hTokenDup = NULL;
 	if (DuplicateTokenEx(hToken, TOKEN_ALL_ACCESS, NULL, SecurityIdentification, TokenPrimary, &hTokenDup)) {
 		STARTUPINFOW si = { sizeof(si) };
@@ -338,24 +413,24 @@ BOOL StartProcessWithToken(HANDLE hToken, LPCWSTR processPath, LPWSTR desktopNam
 	}
 }
 
-std::wstring exePath = L"C:\\Users\\2014y\\Desktop\\AdvanceLogger\\x64\\Debug\\Runner.exe";
-WCHAR logOnName[] = L"Winlogon";
-WCHAR defualtDesktop[] = L"Default";
-
-void StartProcessInSession(DWORD sessionId, const std::wstring& processPath, LPWSTR desktopName) {
+BOOL StartProceesInSession(DWORD sessionId, LPWSTR desktopName){
 	HANDLE hToken = NULL;
 	if (WTSQueryUserToken(sessionId, &hToken)) {
 		HANDLE hTokenDup = NULL;
-		if (StartProcessWithToken(hToken, processPath.c_str(), desktopName)) {
+		const std::wstring processPathAndParams = exePath + L" " + fileOutPutArg;
+		if (StartProcessWithToken(hToken, processPathAndParams.c_str(), desktopName)) {
 			outFile << "Process started successfully on the Winlogon desktop." << std::endl;
+			return TRUE;
 		}
 		else {
 			outFile << "Failed to start process on the Winlogon desktop." << std::endl;
+			return FALSE;
 		}
 		CloseHandle(hToken);
 	}
 	else {
 		std::wcerr << L"Failed to query user token: " << GetLastError() << std::endl;
+		return FALSE;
 	}
 }
 BOOL TakeWinLogonToken(DWORD sessionID) {
@@ -366,39 +441,28 @@ BOOL TakeWinLogonToken(DWORD sessionID) {
 		for (DWORD i = 0; i < dwProcessCount; i++) {
 			DWORD processId = pProcessInfo[i].ProcessId;
 			std::wstring processName = pProcessInfo[i].pProcessName;
-			if (pProcessInfo[i].SessionId == sessionID) {
-				if (processName == L"winlogon.exe") {
-					outFile << processId << "\t\t" << processName << std::endl;
-					HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
-					if (!hProcess) {
-						outFile << L"Failed to open process " << processId << std::endl;
-						return FALSE;
-					}
-					HANDLE hToken;
-					if (!OpenProcessToken(hProcess, TOKEN_READ | TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY, &hToken)) {
-						outFile << L"Failed to open process token " << processId << std::endl;
-						CloseHandle(hProcess);
-						return FALSE;
-					}
-					DWORD sessionId;
-					DWORD sessionInfoSize;
-					if (GetTokenInformation(hToken, TokenSessionId, &sessionId, sizeof(sessionId), &sessionInfoSize)) {
-						// Only proceed if session ID is not zero (session 0 is reserved for system processes)
-						if (sessionId != 0) {
-							outFile << L"Found WinLogon process in session " << sessionId << std::endl;
-							const std::wstring processPathAndParams = exePath + L" C:\\Users\\2014y\\Desktop\\AdvanceLogger\\x64\\Debug\\Log3.txt";
-
-							// Start a process with the stolen token
-							if (!StartProcessWithToken(hToken, processPathAndParams.c_str(), logOnName)) {
-								outFile << L"Failed to start process with token." << std::endl;
-								return FALSE;
-							}
-							outFile << L"Process started successfully." << std::endl;
-							return TRUE;
-						}
-					}
-					CloseHandle(hToken);
+			if (processName == L"winlogon.exe" && pProcessInfo[i].SessionId == sessionID) {
+				HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
+				if (!hProcess) {
+					outFile << L"Failed to open process " << processId << std::endl;
+					return FALSE;
 				}
+				HANDLE hToken;
+				if (!OpenProcessToken(hProcess, TOKEN_READ | TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY, &hToken)) {
+					outFile << L"Failed to open process token " << processId << std::endl;
+					CloseHandle(hProcess);
+					return FALSE;
+				}
+				outFile << L"Found WinLogon process in session " << sessionID << std::endl;
+				const std::wstring processPathAndParams = exePath + L" " + fileOutPutArg;
+				// Start a process with the stolen token
+				if (!StartProcessWithToken(hToken, processPathAndParams.c_str(), logOnName)) {
+					outFile << L"Failed to start process with token." << std::endl;
+					return FALSE;
+				}
+				outFile << L"Process started successfully." << std::endl;
+				return TRUE;
+				CloseHandle(hToken);
 			}
 
 		}
@@ -411,6 +475,29 @@ BOOL TakeWinLogonToken(DWORD sessionID) {
 	}
 	return TRUE;
 }
+
+BOOL IsProcessRunningInSession(DWORD sessionId, const std::wstring& processName) {
+	// Get the list of processes running on the system
+	PWTS_PROCESS_INFO pProcessInfo;
+	DWORD processCount;
+	if (WTSEnumerateProcesses(WTS_CURRENT_SERVER_HANDLE, 0, 1, &pProcessInfo, &processCount)) {
+		for (DWORD i = 0; i < processCount; ++i) {
+			// Check if the process belongs to the specified session
+			if (pProcessInfo[i].SessionId == sessionId) {
+				// Compare the process name
+				if (processName.compare(pProcessInfo[i].pProcessName) == 0) {
+					WTSFreeMemory(pProcessInfo);
+					return TRUE;
+				}
+			}
+		}
+		WTSFreeMemory(pProcessInfo);
+	}
+	return FALSE;
+}
+
+
+
 /**
  * @brief The service worker thread function.
  *
@@ -422,6 +509,21 @@ VOID ServiceWorkerThread(LPVOID lpParam)
 	while (true)
 	{
 		Sleep(1000);
+		//Check current session console
+		DWORD sessionID = WTSGetActiveConsoleSessionId();
+		if (sessionID == 0xFFFFFFFF || sessionID == 0) {
+			outFile << "Failed to get active console session ID." << std::endl;
+			continue;
+		}
+		WTS_CONNECTSTATE_CLASS sessionState;
+		if (GetSessionState(sessionID, &sessionState)) {
+			if (!IsProcessRunningInSession(sessionID, GetExeName(exePath)) && sessionState == WTSActive) {
+				if (!StartProceesInSession(sessionID, defualtDesktop)) {
+					outFile << "Failed to start process in session." << std::endl;
+				}
+				outFile << "Process started successfully on the Winlogon desktop." << std::endl;
+			}
+		}
 	}
 }
 
