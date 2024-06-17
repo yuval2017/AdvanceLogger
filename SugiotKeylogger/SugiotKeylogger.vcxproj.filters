@@ -24,12 +24,4 @@
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
-  <ItemGroup>
-    <None Include="..\x64\Debug\Functionality.dll" />
-  </ItemGroup>
-  <ItemGroup>
-    <ResourceCompile Include="SugiotKeylogger.rc">
-      <Filter>Resource Files</Filter>
-    </ResourceCompile>
-  </ItemGroup>
 </Project>

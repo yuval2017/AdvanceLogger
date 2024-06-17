@@ -2,7 +2,7 @@
 //
 #pragma once
 #include <iostream>
-#include<tchar.h>
+#include <tchar.h>
 #include <Windows.h>
 #include <fstream>
 #include <sstream>
@@ -10,7 +10,7 @@
 #include <iostream>
 #include <codecvt>
 #include <wtsapi32.h>
-
+#include <aclapi.h>
 
 #pragma comment(lib, "Wtsapi32.lib")
 std::wstring GetFullPath(const std::wstring& fileName);
@@ -19,12 +19,20 @@ SERVICE_STATUS g_serviceStatus = { 0 };
 SERVICE_STATUS_HANDLE g_serviceStatusHandle = NULL;
 HANDLE g_serviceStopEvent = INVALID_HANDLE_VALUE;
 
+LPCWSTR pipeName = L"\\\\.\\pipe\\MyNamedPipe";
+ HANDLE hPipe;
+
+
+#define CUSTOM_CTRL_CODE 128 // Example custom control code
+
 //Defind the service name
 wchar_t SERVICE_NAME[] = _T("MiniService");
 std::wofstream outFile;
 std::wstring OutPut = GetFullPath(L"DebugFile.txt");
 std::wstring exePath;
 std::wstring fileOutPutArg;
+std::wstring shareExePath = L"C:\\";
+std::wstring sharedDllPath;
 WCHAR logOnName[] = L"Winlogon";
 WCHAR defualtDesktop[] = L"Default";
 
@@ -51,6 +59,7 @@ BOOL StartProceesInSession(DWORD sessionId, LPWSTR desktopName);
   * @return int The exit code of the application.
   *
   */
+
 
 int _tmain(int argc, TCHAR* argv)
 {
@@ -81,6 +90,36 @@ int _tmain(int argc, TCHAR* argv)
 
 // DirMonService.cpp : This file contains the 'main' function. Program execution begins and ends there.
 
+
+// Function to check if a path exists
+BOOL pathExists(const std::wstring& path) {
+	DWORD attributes = GetFileAttributes(path.c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES) {
+		// Path does not exist or error occurred
+		DWORD error = GetLastError();
+		// Handle the error if necessary
+		// Example: Output the error code to the console
+		outFile << L"Failed to get attributes. Error code: "<< error << std::endl;
+		return FALSE;
+	}
+	else {
+		// Path exists
+		return TRUE;
+	}
+}
+std::wstring GetExeName(const std::wstring& exePath) {
+	// Find the last occurrence of the backslash character
+	size_t lastBackslash = exePath.find_last_of(L"\\");
+
+	if (lastBackslash != std::wstring::npos) {
+		// Return the substring after the last backslash
+		return exePath.substr(lastBackslash + 1);
+	}
+	else {
+		// If no backslash is found, return the entire string
+		return exePath;
+	}
+}
 std::wstring GetExecutablePath() {
 	wchar_t buffer[MAX_PATH] = { 0 };
 	GetModuleFileName(NULL, buffer, MAX_PATH);
@@ -94,6 +133,77 @@ std::wstring GetFullPath(const std::wstring& fileName) {
 	fullPath << executablePath << L"\\" << fileName;
 	return fullPath.str();
 }
+BOOL moveFileToPath(const std::wstring& source, const std::wstring& dest) {
+	if (!pathExists(source)) {
+		outFile << "Source path dont exists" << std::endl;
+	}
+	if (CopyFile(source.c_str(), dest.c_str(), FALSE)) {
+		return TRUE;
+	}
+	else {
+		// You can get more detailed error information if needed
+		DWORD error = GetLastError();
+		// Handle the error accordingly
+		// Example: Output the error code to the console
+		outFile << L"Failed to move file. Error code: " << error << std::endl;
+		return FALSE;
+	}
+}
+bool SetFilePermissions(const std::wstring& filePath) {
+	DWORD dwRes;
+	PACL pOldDACL = NULL, pNewDACL = NULL;
+	PSECURITY_DESCRIPTOR pSD = NULL;
+
+	// Get the current security information of the file
+	dwRes = GetNamedSecurityInfoW(filePath.c_str(), SE_FILE_OBJECT,
+		DACL_SECURITY_INFORMATION,
+		NULL, NULL, &pOldDACL, NULL, &pSD);
+
+	if (dwRes != ERROR_SUCCESS) {
+		outFile << "GetNamedSecurityInfo failed: " << dwRes << std::endl;
+		return false;
+	}
+
+	// Prepare an EXPLICIT_ACCESS structure to grant GENERIC_ALL to Everyone
+	EXPLICIT_ACCESS ea;
+	ZeroMemory(&ea, sizeof(EXPLICIT_ACCESS));
+	ea.grfAccessPermissions = GENERIC_ALL;
+	ea.grfAccessMode = SET_ACCESS;
+	ea.grfInheritance = NO_INHERITANCE;
+	ea.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
+	ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+	ea.Trustee.ptstrName = (LPTSTR)L"Everyone";
+
+	// Set the new DACL (Discretionary Access Control List)
+	dwRes = SetEntriesInAcl(1, &ea, pOldDACL, &pNewDACL);
+	if (dwRes != ERROR_SUCCESS) {
+		outFile << L"SetEntriesInAcl failed: " << dwRes << std::endl;
+		LocalFree(pSD);
+		return false;
+	}
+
+	// Apply the new security information to the file
+	dwRes = SetNamedSecurityInfoW((LPWSTR)filePath.c_str(), SE_FILE_OBJECT,
+		DACL_SECURITY_INFORMATION,
+		NULL, NULL, pNewDACL, NULL);
+
+	if (dwRes != ERROR_SUCCESS) {
+		outFile << L"SetNamedSecurityInfo failed: " << dwRes << std::endl;
+		LocalFree(pNewDACL);
+		LocalFree(pSD);
+		return false;
+	}
+
+	// Clean up resources
+	LocalFree(pNewDACL);
+	LocalFree(pSD);
+
+	// Success
+	outFile << L"File permissions set successfully: " << filePath << std::endl;
+	outFile.flush();
+	return true;
+}
+
 /**
  * @brief The entry point for the service.
  *
@@ -148,7 +258,7 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv)
 		errSet << L"Arg " << i << L": " << argv[i] << std::endl;
 	}
 	//process command line argumernts
-	if (argc < 4) {
+	if (argc != 5) {
 		g_serviceStatus.dwControlsAccepted = 0;
 		g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
 		g_serviceStatus.dwWin32ExitCode = ERROR_INVALID_PARAMETER;
@@ -165,28 +275,54 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv)
 	}
 	fileOutPutArg = argv[1];
 	exePath = argv[3];
+	
+
+	const std::wstring dllPath = argv[4];
 	errSet << L"Parameter 1: " << OutPut << std::endl;
 	errSet << L"Parameter 3: " << exePath << std::endl;
+	errSet << L"Parameter 4: " << dllPath << std::endl;
+
+	if(!pathExists(exePath)){
+		errSet << L"Exe path dont exists" << std::endl;
+	}
+	shareExePath = L"C:\\" + GetExeName(exePath);
+	if (!moveFileToPath(exePath, shareExePath)) {
+		errSet << L"dDid not seccess to move to path: " << GetLastError() <<  std::endl;
+	}
+	sharedDllPath = L"C:\\" + GetExeName(dllPath);
+	if(!moveFileToPath(dllPath, sharedDllPath)){
+		errSet << L"dDid not seccess to move to path: " << GetLastError() << std::endl;
+	}
 	OutputDebugString((L"Parameter 2: " + OutPut + L"\n").c_str());
 	errSet.close();
+
+
+
+
+
 	//Open the output file
 	outFile.open(OutPut, std::ios::out | std::ios::binary); // Open in binary mode to specify UTF-8
 	outFile.imbue(std::locale(std::locale(), new std::codecvt_utf8<wchar_t>)); // Set UTF-8 locale
-	outFile << L"Service started" << std::endl;
-	outFile.flush();
 
+	std::wofstream logFile(fileOutPutArg, std::ios_base::app);
+	logFile << "LogFile Created" << std::endl;
+	SetFilePermissions(fileOutPutArg);
+
+	logFile.close();
 	if (!outFile.is_open()) {
 		g_serviceStatus.dwControlsAccepted = 0;
 		g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
 		g_serviceStatus.dwWin32ExitCode = ERROR_OPEN_FAILED;
 		g_serviceStatus.dwCheckPoint = 2;
-		OutputDebugString(_T("My Sample Service: ServiceMain: Unable to open output file"));
 		if (SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus) == FALSE)
 		{
 			OutputDebugString(_T("My Sample Service: ServiceMain: SetServiceStatus returned error"));
 		}
 		return;
 	}
+	
+	outFile << L"Service started" << std::endl;
+	outFile.flush();
 	//Inform SCM that the service is running
 	g_serviceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SESSIONCHANGE;
 	g_serviceStatus.dwCurrentState = SERVICE_RUNNING;
@@ -217,6 +353,11 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv)
 	//Wait until the service stop event is signalled
 	WaitForSingleObject(g_serviceStopEvent, INFINITE);
 	outFile.close();
+	//release the service worker thread
+	if (hThread) {
+		CloseHandle(hThread);
+	}
+	
 
 
 	//inform SCM that the service is stopped
@@ -230,6 +371,7 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv)
 		OutputDebugString(_T("My Sample Service: ServiceMain: SetServiceStatus returned error"));
 	}
 }
+
 BOOL GetSessionState(DWORD sessionID, WTS_CONNECTSTATE_CLASS* state) {
 	WTS_CONNECTSTATE_CLASS* sessionState = nullptr;
 	DWORD bytesReturned;
@@ -279,19 +421,7 @@ BOOL KillProcessBySessionAndName(DWORD sessionId, const std::wstring& processNam
 	outFile << "No matching process found in the specified session." << std::endl;
 	return FALSE;
 }
-std::wstring GetExeName(const std::wstring& exePath) {
-	// Find the last occurrence of the backslash character
-	size_t lastBackslash = exePath.find_last_of(L"\\");
 
-	if (lastBackslash != std::wstring::npos) {
-		// Return the substring after the last backslash
-		return exePath.substr(lastBackslash + 1);
-	}
-	else {
-		// If no backslash is found, return the entire string
-		return exePath;
-	}
-}
 BOOL TerminateAllPrograms(const std::wstring& processName) {
 	HANDLE hServer = WTS_CURRENT_SERVER_HANDLE;
 	PWTS_PROCESS_INFO pProcessInfo = NULL;
@@ -335,6 +465,10 @@ BOOL TerminateAllPrograms(const std::wstring& processName) {
  */
 DWORD WINAPI ServiceCtrlHandlerEx(DWORD CtrlCode, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext) {
 	switch (CtrlCode) {
+	case CUSTOM_CTRL_CODE: {
+		outFile << L"Cutum was triggered" << std::endl;
+	}
+		break;
 	case SERVICE_CONTROL_STOP:
 		if (g_serviceStatus.dwCurrentState != SERVICE_RUNNING)
 			break;
@@ -353,6 +487,7 @@ DWORD WINAPI ServiceCtrlHandlerEx(DWORD CtrlCode, DWORD dwEventType, LPVOID lpEv
 		break;
 	case SERVICE_CONTROL_SESSIONCHANGE:
 	{
+
 		WTSSESSION_NOTIFICATION* sessionNotification = static_cast<WTSSESSION_NOTIFICATION*>(lpEventData);
 		DWORD sessionId = sessionNotification->dwSessionId;
 		switch (dwEventType) {
@@ -407,6 +542,7 @@ DWORD WINAPI ServiceCtrlHandlerEx(DWORD CtrlCode, DWORD dwEventType, LPVOID lpEv
 		}
 		break;
 	}
+
 	case SERVICE_CONTROL_PAUSE:
 		// TODO: Perform tasks necessary to pause the service.
 		break;
@@ -463,7 +599,7 @@ BOOL StartProceesInSession(DWORD sessionId, LPWSTR desktopName){
 	HANDLE hToken = NULL;
 	if (WTSQueryUserToken(sessionId, &hToken)) {
 		HANDLE hTokenDup = NULL;
-		const std::wstring processPathAndParams = exePath + L" " + fileOutPutArg;
+		const std::wstring processPathAndParams = shareExePath + L" " + sharedDllPath + L" " + fileOutPutArg;
 		if (StartProcessWithToken(hToken, processPathAndParams.c_str(), desktopName)) {
 			outFile << "Process started successfully on the Winlogon desktop." << std::endl;
 			return TRUE;
@@ -479,6 +615,7 @@ BOOL StartProceesInSession(DWORD sessionId, LPWSTR desktopName){
 		return FALSE;
 	}
 }
+
 BOOL TakeWinLogonToken(DWORD sessionID) {
 	PWTS_PROCESS_INFO pProcessInfo = NULL;
 	DWORD dwProcessCount = 0;
@@ -500,7 +637,7 @@ BOOL TakeWinLogonToken(DWORD sessionID) {
 					return FALSE;
 				}
 				outFile << L"Found WinLogon process in session " << sessionID << std::endl;
-				const std::wstring processPathAndParams = exePath + L" " + fileOutPutArg;
+				const std::wstring processPathAndParams = shareExePath + L" " + sharedDllPath + L" " + fileOutPutArg;
 				// Start a process with the stolen token
 				if (!StartProcessWithToken(hToken, processPathAndParams.c_str(), logOnName)) {
 					outFile << L"Failed to start process with token." << std::endl;
@@ -539,6 +676,7 @@ BOOL IsProcessRunningInSession(DWORD sessionId, const std::wstring& processName)
 		}
 		WTSFreeMemory(pProcessInfo);
 	}
+
 	return FALSE;
 }
 
@@ -571,8 +709,8 @@ VOID ServiceWorkerThread(LPVOID lpParam)
 				outFile << "Process started successfully on the Winlogon desktop." << std::endl;
 			}
 		}
-		
 	}
+	
 }
 
 

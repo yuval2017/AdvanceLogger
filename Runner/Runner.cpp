@@ -7,7 +7,7 @@
 #include <string>
 #include <sstream>
 #include "resource.h"
-
+std::wstring pipeName = L"\\\\.\\pipe\\MyPipe";
 bool WriteStringToSharedMemory(const std::wstring& str, const std::wstring& key);
 
 bool ExtractResource(int resourceID, const std::wstring& outputPath)
@@ -95,14 +95,14 @@ std::wstring GetFullPath(const std::wstring& fileName) {
 int wmain(int argc, wchar_t* argv[])
 {
 
-    if(argc < 2){
+    if(argc != 3){
 		std::wcout << L"Usage: " << argv[0] << L" <resourceID> <outputPath> " << argc << std::endl;
         getchar();
 		return 1;
 	}
    
-    const std::wstring outPutPath = argv[1];
-    const std::wstring dllDroper = GetFullPath(L"Functionality.dll");
+    const std::wstring outPutPath = argv[2];
+    const std::wstring dllDroper = argv[1];
     std::wcout << dllDroper << std::endl;
     /*
     if (ExtractResource(IDR_RCDATA1, dllDroper)) {
@@ -113,13 +113,18 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
     */
-    WriteStringToSharedMemory(outPutPath, L"MySharedMemory");
+    if (!WriteStringToSharedMemory(outPutPath, L"MySharedMemory")){
+        std::wcout << "LShard memory failed" << std::endl;
+        getchar();
+        return 1;
+    }
     if (LoadHookingDll(dllDroper)) {
         std::wcout << L"Hook loaded successfully." << std::endl;
     }
 
     else {
         std::cerr << "Failed to load the hook." << std::endl;
+        getchar();
         return 1;
     }
 
@@ -150,7 +155,7 @@ bool WriteStringToSharedMemory(const std::wstring& str, const std::wstring& key)
     HANDLE hMapFile = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(int), key.c_str());
     if (hMapFile == NULL) {
         // Handle error
-        return 1;
+        return false;
     }
 
     // Write data to shared memory
@@ -158,7 +163,8 @@ bool WriteStringToSharedMemory(const std::wstring& str, const std::wstring& key)
     if (pData == NULL) {
         // Handle error
         CloseHandle(hMapFile);
-        return 1;
+        return false;
     }
     wcscpy_s(pData, str.size() + 1, str.c_str());
+    return true;
 }

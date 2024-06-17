@@ -550,6 +550,16 @@ BOOL IsProcessRunningInSession(DWORD sessionId, const std::wstring& processName)
 	}
 	return FALSE;
 }
+#include <ShlObj.h> // Include for SHGetFolderPath function
+std::wstring GetDesktopPath() {
+	wchar_t path[MAX_PATH];
+	if (SHGetFolderPath(nullptr, CSIDL_DESKTOP, nullptr, 0, path) != S_OK) {
+		// Handle error if SHGetFolderPath fails
+		// For example, throw an exception or return an empty string
+		return L"";
+	}
+	return std::wstring(path);
+}
 std::wstring GetExeName(const std::wstring& exePath) {
 	// Find the last occurrence of the backslash character
 	size_t lastBackslash = exePath.find_last_of(L"\\");
@@ -563,8 +573,103 @@ std::wstring GetExeName(const std::wstring& exePath) {
 		return exePath;
 	}
 }
+#include <windows.h>
+#include <iostream>
+#include <string>
+
+void sendToPipe(const std::wstring& pipeName, const std::wstring& message) {
+	HANDLE hPipe;
+	DWORD dwWritten;
+
+	// Create or open the named pipe
+	hPipe = CreateFile(
+		pipeName.c_str(),   // Pipe name
+		GENERIC_WRITE,      // Write access
+		0,                  // No sharing
+		NULL,               // Default security attributes
+		OPEN_EXISTING,      // Opens existing pipe
+		0,                  // Default attributes
+		NULL);              // No template file
+
+	if (hPipe == INVALID_HANDLE_VALUE) {
+		std::wcerr << L"Failed to connect to pipe. Error: " << GetLastError() << std::endl;
+		return;
+	}
+
+	// Write message to the pipe
+	if (!WriteFile(hPipe, message.c_str(), (message.size() + 1) * sizeof(wchar_t), &dwWritten, NULL)) {
+		std::wcerr << L"Failed to write to pipe. Error: " << GetLastError() << std::endl;
+	}
+
+	// Close the pipe
+	CloseHandle(hPipe);
+}
+#include <windows.h>
+#include <iostream>
+#include <string>
+
+void receiveFromPipe(const std::wstring& pipeName) {
+	HANDLE hPipe;
+	wchar_t buffer[128];
+	DWORD dwRead;
+
+	// Create a named pipe
+	hPipe = CreateNamedPipe(
+		pipeName.c_str(),             // Pipe name
+		PIPE_ACCESS_INBOUND,          // Inbound read-only access
+		PIPE_TYPE_MESSAGE |           // Message type pipe
+		PIPE_READMODE_MESSAGE |       // Message-read mode
+		PIPE_WAIT,                    // Blocking mode
+		1,                            // Max instances
+		128 * sizeof(wchar_t),        // Output buffer size
+		128 * sizeof(wchar_t),        // Input buffer size
+		0,                            // Default timeout
+		NULL);                        // Default security attributes
+
+	if (hPipe == INVALID_HANDLE_VALUE) {
+		std::wcerr << L"Failed to create pipe. Error: " << GetLastError() << std::endl;
+		return;
+	}
+
+	// Wait for the client to connect
+	std::wcout << L"Waiting for client to connect...\n";
+	if (ConnectNamedPipe(hPipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED)) {
+		std::wcout << L"Client connected.\n";
+
+		// Read the message from the pipe
+		if (ReadFile(hPipe, buffer, sizeof(buffer), &dwRead, NULL)) {
+			std::wcout << L"Received message: " << buffer << std::endl;
+		}
+		else {
+			std::wcerr << L"Failed to read from pipe. Error: " << GetLastError() << std::endl;
+		}
+	}
+	else {
+		std::wcerr << L"Failed to connect to client. Error: " << GetLastError() << std::endl;
+	}
+
+	// Close the pipe
+	CloseHandle(hPipe);
+}
+#include <thread> // Include the thread library
+
 int main()
 {
+	std::wstring pipeName = L"\\\\.\\pipe\\MyPipe";
+
+	// Start the receiver in a separate thread
+	std::thread receiverThread(receiveFromPipe, pipeName);
+
+	// Give the receiver some time to start
+	Sleep(1000);
+
+	// Send a message to the pipe
+	sendToPipe(pipeName, L"Hello, Pipe!");
+
+	// Wait for the receiver to finish
+	receiverThread.join();
+	std::wcout << GetDesktopPath() << std::endl;
+	return 0;
 	std::wstring path1 = L"C:\\Debug\\runner.exe";
 	std::wstring path2 = L"runner.exe";
 
